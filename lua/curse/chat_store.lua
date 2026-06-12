@@ -1,4 +1,5 @@
 local config = require("curse.config")
+local chat_sqlite = require("curse.chat_sqlite")
 
 local M = {}
 
@@ -9,24 +10,6 @@ local M = {}
 ---@field workspace_hash string
 ---@field created_at integer
 ---@field model? string
-
----@param hex string
----@return table?
-local function decode_meta_hex(hex)
-  if not hex or hex == "" then return nil end
-  hex = vim.trim(hex)
-
-  local chars = {}
-  for i = 1, #hex, 2 do
-    local byte = tonumber(hex:sub(i, i + 1), 16)
-    if not byte then return nil end
-    chars[#chars + 1] = string.char(byte)
-  end
-
-  local ok, decoded = pcall(vim.json.decode, table.concat(chars))
-  if ok then return decoded end
-  return nil
-end
 
 ---@param path string
 ---@return string?
@@ -53,20 +36,6 @@ local function storage_root()
   return nil
 end
 
----@param db_path string
----@return string?
-local function read_meta_hex(db_path)
-  local result = vim.system({
-    "sqlite3",
-    "-batch",
-    "-noheader",
-    db_path,
-    "select value from meta where key=0",
-  }, { text = true }):wait()
-  if result.code ~= 0 then return nil end
-  return vim.trim(result.stdout)
-end
-
 ---@param root string
 ---@param workspace_hash? string
 ---@return string[]
@@ -89,10 +58,7 @@ end
 ---@param workspace_paths table<string, string>
 ---@return CurseChatEntry?
 local function parse_store_db(db_path, workspace_paths)
-  local meta_hex = read_meta_hex(db_path)
-  if not meta_hex then return nil end
-
-  local meta = decode_meta_hex(meta_hex)
+  local meta = chat_sqlite.read_meta(db_path)
   if not meta then return nil end
 
   local chat_id = vim.fn.fnamemodify(db_path, ":h:t")
@@ -121,8 +87,8 @@ function M.list_sync(opts)
     return {}, "cursor-agent chat storage not found"
   end
 
-  if vim.fn.executable("sqlite3") ~= 1 then
-    return {}, "sqlite3 not found on PATH (required for session picker)"
+  if not chat_sqlite.available() then
+    return {}, chat_sqlite.unavailable_message()
   end
 
   local workspace_paths = {}
