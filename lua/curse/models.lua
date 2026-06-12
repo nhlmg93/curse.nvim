@@ -1,12 +1,8 @@
+require("curse.types")
+
 local config = require("curse.config")
 
 local M = {}
-
----@class CurseModelEntry
----@field id string Model slug passed to cursor-agent via --model
----@field name string Human-readable display name
----@field default? boolean Present when cursor-agent marks account default
----@field current? boolean Present when cursor-agent marks CLI current model
 
 ---@type CurseModelEntry[]?
 local cache = nil

@@ -1,3 +1,5 @@
+require("curse.types")
+
 local config = require("curse.config")
 local context = require("curse.context")
 local interaction = require("curse.interaction")
@@ -75,8 +77,8 @@ function M.run(opts)
     skip_system_prompt = true,
     capture_output = true,
     require_file_backed = false,
-    on_complete = function(_, output)
-      opts.on_output(output or "")
+    on_complete = function(result)
+      opts.on_output(result.output or "")
     end,
   })
 end

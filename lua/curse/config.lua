@@ -1,37 +1,4 @@
----@alias CurseStatus "collecting_context"|"starting"|"thinking"|"running_tool"|"done"|"error"|"cancelled"
-
----@class CurseLineRange
----@field start integer
----@field ["end"] integer
-
----@class CurseLogConfig
----@field enabled? boolean
----@field path? string
----@field debug? boolean
-
----@class CurseTaskConfig
----@field model? string
----@field mode? "ask"|"plan"
-
----@class CurseUiConfig
----@field notify? fun(msg: string, level?: integer, opts?: table)
----@field input? fun(opts: table, on_confirm: fun(input?: string))
----@field select? fun(items: table[], opts: table, on_choice: fun(choice?: any, idx?: integer))
-
----@class CurseChatConfig
----@field storage_path? string
----@field all_workspaces? boolean
-
----@class CurseConfig
----@field mode? "plan"|"ask"|nil
----@field model? string
----@field append_system_prompt? string
----@field context? { max_bytes?: integer, ask?: { surrounding_lines?: integer } }
----@field log? CurseLogConfig
----@field search? CurseTaskConfig
----@field tutorial? CurseTaskConfig
----@field chat? CurseChatConfig
----@field ui? CurseUiConfig
+require("curse.types")
 
 local M = {}
 

@@ -1,13 +1,6 @@
-local M = {}
+require("curse.types")
 
----@class CurseChat
----@field id string
----@field name? string
----@field workspace? string
----@field workspace_hash? string
----@field model? string
----@field created_at? integer
----@field last_used_at? integer
+local M = {}
 
 ---@type CurseChat?
 local active = nil

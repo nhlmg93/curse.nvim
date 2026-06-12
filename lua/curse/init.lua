@@ -1,3 +1,5 @@
+require("curse.types")
+
 local config = require("curse.config")
 local context = require("curse.context")
 local chats = require("curse.chats")
@@ -7,40 +9,10 @@ local queue = require("curse.queue")
 local runner = require("curse.runner")
 local ui = require("curse.ui")
 
----@module curse
----@class curse
----@field setup fun(opts?: CurseConfig)
----@field run fun(opts: CurseRunOpts)
----@field prompt fun(range?: CurseLineRange)
----@field visual_range fun(): CurseLineRange?
----@field cancel fun()
----@field show_log fun()
----@field is_running fun(): boolean
----@field queue_size fun(): integer
----@field get_model fun(): string
----@field set_model fun(slug: string)
----@field list_models fun(callback: fun(models: CurseModelEntry[], err?: string))
----@field select_model fun()
----@field list_chats fun(opts: { workspace?: string, all_workspaces?: boolean }?, callback: fun(chats: CurseChatEntry[], err?: string))
----@field get_active_chat fun(): CurseChat?
----@field set_active_chat fun(id: string)
----@field select_chat fun(opts?: { workspace?: string, all_workspaces?: boolean })
----@field new_chat fun()
----@field get_cmd fun(bufnr?: integer, opts?: { reuse_chat?: boolean }): string[]
+---@type curse
+local M = {}
 
----@class CurseRunOpts
----@field message string
----@field build_context? fun(): string
----@field bufnr? integer
----@field range? CurseLineRange
----@field cmd? string[]
----@field reload? boolean
----@field skip_system_prompt? boolean
----@field reuse_chat? boolean
----@field capture_output? boolean
----@field require_file_backed? boolean
----@field on_complete? fun(session: CurseSession, output: string)
-
+--- Internal runner state; not part of the public API.
 ---@class CurseSession
 ---@field id integer
 ---@field status CurseStatus
@@ -57,12 +29,9 @@ local ui = require("curse.ui")
 ---@field last_notified_signature string?
 ---@field reload? boolean
 ---@field capture_output? boolean
----@field on_complete? fun(session: CurseSession, output: string)
+---@field on_complete? fun(result: CurseRunResult)
 ---@field output_parts? string[]
 ---@field output? string
-
----@type curse
-local M = {}
 
 ---@type CurseSession?
 local active_session = nil
@@ -132,7 +101,7 @@ local function ensure_file_backed_buffer()
 end
 
 ---@param bufnr? integer
----@param opts? { reuse_chat?: boolean }
+---@param opts? CurseGetCmdOpts
 ---@return string[]
 function M.get_cmd(bufnr, opts)
   opts = opts or {}
@@ -257,7 +226,14 @@ local function finish_session(session, status, opts)
       session.output = table.concat(session.output_parts)
     end
     if session.on_complete then
-      local ok, err = pcall(session.on_complete, session, session_output(session))
+      ---@type CurseRunResult
+      local result = {
+        status = status,
+        output = session_output(session),
+        error = opts.error,
+        cancelled = session.cancelled,
+      }
+      local ok, err = pcall(session.on_complete, result)
       if not ok then
         interaction.notify("curse on_complete error: " .. tostring(err), vim.log.levels.ERROR)
       end
@@ -703,8 +679,8 @@ end
 
 M.list_models = require("curse.models").list
 
----@param opts? { workspace?: string, all_workspaces?: boolean }
----@param callback fun(chats: CurseChatEntry[], err?: string)
+---@param opts? CurseListChatsOpts
+---@param callback fun(chats: CurseChat[], err?: string)
 function M.list_chats(opts, callback)
   require("curse.chat_store").list(opts, callback)
 end
@@ -719,7 +695,7 @@ function M.set_active_chat(id)
   chats.set_active({ id = id })
 end
 
----@param opts? { workspace?: string, all_workspaces?: boolean }
+---@param opts? CurseListChatsOpts
 function M.select_chat(opts)
   local chat_cfg = config.get().chat or {}
   opts = opts or {}

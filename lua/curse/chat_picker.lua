@@ -1,10 +1,12 @@
+require("curse.types")
+
 local chats = require("curse.chats")
 local chat_store = require("curse.chat_store")
 local interaction = require("curse.interaction")
 
 local M = {}
 
----@param entry CurseChatEntry
+---@param entry CurseChat
 ---@param active? CurseChat
 ---@return string
 local function format_item(entry, active)
@@ -18,22 +20,22 @@ local function format_item(entry, active)
   return label
 end
 
----@param items CurseChatEntry[]
+---@param items CurseChat[]
 ---@param active? CurseChat
 local function sort_items(items, active)
-  ---@param a CurseChatEntry
-  ---@param b CurseChatEntry
+  ---@param a CurseChat
+  ---@param b CurseChat
   ---@return boolean
   local function cmp(a, b)
     if active and a.id == active.id then return true end
     if active and b.id == active.id then return false end
-    return a.created_at > b.created_at
+    return (a.created_at or 0) > (b.created_at or 0)
   end
   table.sort(items, cmp)
 end
 
----@param opts? { workspace?: string, all_workspaces?: boolean }
----@param on_done? fun(choice?: CurseChatEntry)
+---@param opts? CurseListChatsOpts
+---@param on_done? fun(choice?: CurseChat)
 function M.prompt(opts, on_done)
   opts = opts or {}
 

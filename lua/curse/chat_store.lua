@@ -1,15 +1,9 @@
+require("curse.types")
+
 local config = require("curse.config")
 local chat_sqlite = require("curse.chat_sqlite")
 
 local M = {}
-
----@class CurseChatEntry
----@field id string
----@field name string
----@field workspace string
----@field workspace_hash string
----@field created_at integer
----@field model? string
 
 ---@param path string
 ---@return string?
@@ -56,7 +50,7 @@ end
 
 ---@param db_path string
 ---@param workspace_paths table<string, string>
----@return CurseChatEntry?
+---@return CurseChat?
 local function parse_store_db(db_path, workspace_paths)
   local meta = chat_sqlite.read_meta(db_path)
   if not meta then return nil end
@@ -78,8 +72,8 @@ local function parse_store_db(db_path, workspace_paths)
   }
 end
 
----@param opts? { workspace?: string, all_workspaces?: boolean }
----@return CurseChatEntry[], string?
+---@param opts? CurseListChatsOpts
+---@return CurseChat[], string?
 function M.list_sync(opts)
   opts = opts or {}
   local root = storage_root()
@@ -111,14 +105,14 @@ function M.list_sync(opts)
   end
 
   table.sort(chats, function(a, b)
-    return a.created_at > b.created_at
+    return (a.created_at or 0) > (b.created_at or 0)
   end)
 
   return chats
 end
 
----@param opts? { workspace?: string, all_workspaces?: boolean }
----@param callback fun(chats: CurseChatEntry[], err?: string)
+---@param opts? CurseListChatsOpts
+---@param callback fun(chats: CurseChat[], err?: string)
 function M.list(opts, callback)
   vim.system({ "true" }, {}, function()
     vim.schedule(function()

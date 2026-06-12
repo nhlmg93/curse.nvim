@@ -77,6 +77,84 @@ Set `log = { enabled = false }` to disable file logging entirely.
 
 Set `vim.g.curse_debug = true` to enable debug output regardless of config.
 
+## API reference
+
+The public surface is `require("curse")` only. Submodules (`curse.config`, `curse.task`, etc.) are internal and not supported for downstream use.
+
+### Stable API
+
+| Function | Purpose |
+|----------|---------|
+| `curse.setup(opts?)` | Initialize plugin and register commands |
+| `curse.prompt(range?)` | Prompt for a message and run ask (file-backed buffer required) |
+| `curse.cancel()` | Cancel the active request |
+| `curse.show_log()` | Open the session log buffer |
+| `curse.list_chats(opts?, callback)` | List stored chats; `callback(chats, err?)` |
+| `curse.get_active_chat()` | Active chat or nil |
+| `curse.set_active_chat(id)` | Set active chat for next ask |
+| `curse.select_chat(opts?)` | Built-in session picker |
+| `curse.new_chat()` | Clear active chat |
+| `curse.list_models(callback)` | Async fetch; `callback(models, err?)` |
+| `curse.get_model()` | Current session model slug |
+| `curse.set_model(slug)` | Set session model slug |
+| `curse.select_model()` | Built-in model picker |
+
+### Extension API
+
+For custom cursor-agent integrations (similar to built-in search/tutorial). May evolve between releases.
+
+| Function | Purpose |
+|----------|---------|
+| `curse.run(opts)` | Run cursor-agent with custom options (see `CurseRunOpts`) |
+| `curse.get_cmd(bufnr?, opts?)` | Build CLI argv; pass to `run({ cmd = ... })` |
+| `curse.visual_range()` | Current visual selection as `{ start, end }` line range |
+| `curse.is_running()` | Whether a request is active |
+| `curse.queue_size()` | Number of queued requests |
+
+```lua
+require("curse").run({
+  message = "Summarize this file",
+  capture_output = true,
+  on_complete = function(result)
+    if result.status == "done" then
+      print(result.output)
+    end
+  end,
+})
+```
+
+### Types
+
+**`CurseConfig`** — passed to `setup()` (see [Configuration](#configuration) above).
+
+**`CurseChat`** — chat record from `list_chats` / `get_active_chat`:
+
+`{ id, name?, workspace?, workspace_hash?, created_at?, model?, last_used_at? }`
+
+**`CurseModelEntry`** — model from `list_models`:
+
+`{ id, name, default?, current? }`
+
+**`CurseRunOpts`** — extension run options:
+
+| Field | Description |
+|-------|-------------|
+| `message` | Prompt text (required) |
+| `bufnr?` | Source buffer (defaults to current) |
+| `range?` | Line range for context |
+| `cmd?` | CLI argv override (from `get_cmd`) |
+| `build_context?` | Custom context builder |
+| `reload?` | Reload source buffer on success (default true for ask) |
+| `skip_system_prompt?` | Omit curse system prompt |
+| `reuse_chat?` | Resume active chat (default true) |
+| `capture_output?` | Collect assistant output |
+| `require_file_backed?` | Require file-backed buffer when queued |
+| `on_complete?` | Callback with `CurseRunResult` on success |
+
+**`CurseRunResult`** — passed to `on_complete`:
+
+`{ status, output, error?, cancelled }` where `status` is a `CurseStatus` string.
+
 ## Chat sessions
 
 Ask commands reuse the same **cursor-agent chat** until `:CurseNew` or Neovim exit:
@@ -87,18 +165,6 @@ Ask commands reuse the same **cursor-agent chat** until `:CurseNew` or Neovim ex
 - `:CurseSearch` and `:CurseTutorial` do not reuse or affect the ask chat
 
 Session list comes from cursor-agent's on-disk storage (`~/.config/cursor/chats/…`), not an in-memory registry — so you can pick up prior sessions after restarting Neovim.
-
-### Public API
-
-| Function | Purpose |
-|----------|---------|
-| `curse.list_chats(opts?, callback)` | List stored chats; `callback(chats, err?)` |
-| `curse.get_active_chat()` | Active chat or nil |
-| `curse.set_active_chat(id)` | Set active chat for next ask |
-| `curse.select_chat(opts?)` | Built-in session picker |
-| `curse.new_chat()` | Clear active chat |
-
-Each `CurseChatEntry`: `{ id, name, workspace, workspace_hash, created_at, model? }`.
 
 ### Custom session picker
 
@@ -122,17 +188,6 @@ end)
 - `:CurseModel` or `curse.select_model()` switches the model for the current session only (in-memory; restart restores your setup default)
 - Model list is fetched from `cursor-agent models` (account-specific)
 - `:CurseModel` uses plain Neovim `vim.ui.select` by default (via `ui.select` hook when configured)
-
-### Public API
-
-| Function | Purpose |
-|----------|---------|
-| `curse.list_models(callback)` | Async fetch; `callback(models, err?)` |
-| `curse.get_model()` | Current session slug |
-| `curse.set_model(slug)` | Set session slug |
-| `curse.select_model()` | Built-in model picker |
-
-Each `CurseModelEntry`: `{ id, name, default?, current? }`.
 
 ## Custom UI (optional)
 
