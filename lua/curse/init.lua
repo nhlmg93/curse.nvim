@@ -1,11 +1,13 @@
 local config = require("curse.config")
 local context = require("curse.context")
+local chats = require("curse.chats")
 local interaction = require("curse.interaction")
 local logger = require("curse.logger")
 local queue = require("curse.queue")
 local runner = require("curse.runner")
 local ui = require("curse.ui")
 
+---@module curse
 ---@class curse
 ---@field setup fun(opts?: CurseConfig)
 ---@field run fun(opts: CurseRunOpts)
@@ -17,9 +19,14 @@ local ui = require("curse.ui")
 ---@field queue_size fun(): integer
 ---@field get_model fun(): string
 ---@field set_model fun(slug: string)
+---@field list_models fun(callback: fun(models: CurseModelEntry[], err?: string))
 ---@field select_model fun()
----@field get_cmd fun(bufnr?: integer): string[]
----@field component table
+---@field list_chats fun(opts: { workspace?: string, all_workspaces?: boolean }?, callback: fun(chats: CurseChatEntry[], err?: string))
+---@field get_active_chat fun(): CurseChat?
+---@field set_active_chat fun(id: string)
+---@field select_chat fun(opts?: { workspace?: string, all_workspaces?: boolean })
+---@field new_chat fun()
+---@field get_cmd fun(bufnr?: integer, opts?: { reuse_chat?: boolean }): string[]
 
 ---@class CurseRunOpts
 ---@field message string
@@ -29,6 +36,7 @@ local ui = require("curse.ui")
 ---@field cmd? string[]
 ---@field reload? boolean
 ---@field skip_system_prompt? boolean
+---@field reuse_chat? boolean
 ---@field capture_output? boolean
 ---@field require_file_backed? boolean
 ---@field on_complete? fun(session: CurseSession, output: string)
@@ -124,8 +132,10 @@ local function ensure_file_backed_buffer()
 end
 
 ---@param bufnr? integer
+---@param opts? { reuse_chat?: boolean }
 ---@return string[]
-function M.get_cmd(bufnr)
+function M.get_cmd(bufnr, opts)
+  opts = opts or {}
   local cfg = config.get()
   local cmd = {
     "cursor-agent",
@@ -145,6 +155,13 @@ function M.get_cmd(bufnr)
   end
   table.insert(cmd, "--model")
   table.insert(cmd, config.get_model())
+  if opts.reuse_chat ~= false then
+    local chat = chats.get_active()
+    if chat then
+      table.insert(cmd, "--resume")
+      table.insert(cmd, chat.id)
+    end
+  end
   return cmd
 end
 
@@ -275,6 +292,31 @@ local function event_subtype(event)
   return event.subtype or event.subType
 end
 
+---@param message string
+---@param max_len integer
+---@return string
+local function truncate_label(message, max_len)
+  message = vim.trim(message)
+  if #message <= max_len then return message end
+  return message:sub(1, max_len - 3) .. "..."
+end
+
+---@param event table
+---@param bufnr integer
+---@param message string
+local function capture_chat_from_event(event, bufnr, message)
+  if event.type ~= "system" or event_subtype(event) ~= "init" then return end
+  if not event.session_id then return end
+
+  local workspace = workspace_for(bufnr)
+  chats.touch(event.session_id, {
+    name = truncate_label(message, 60),
+    workspace = workspace,
+    workspace_hash = require("curse.chat_store").workspace_hash(workspace),
+    model = config.get_model(),
+  })
+end
+
 ---@param event table
 ---@return boolean
 local function result_is_success(event)
@@ -394,7 +436,8 @@ end
 start_session = function(opts)
   local message = opts.message
   local bufnr = opts.bufnr
-  local cmd = opts.cmd or M.get_cmd(bufnr)
+  local resuming = opts.reuse_chat ~= false and chats.get_active() ~= nil
+  local cmd = opts.cmd or M.get_cmd(bufnr, opts)
 
   local build_context = opts.build_context
   if not build_context then
@@ -415,14 +458,21 @@ start_session = function(opts)
 
   ui.render(session, ui_opts())
 
-  local ok, built_context = pcall(build_context)
-  if not ok then
-    logger.info("context build failed: %s", tostring(built_context))
-    finish_session(session, "error", { error = built_context })
-    return
+  local prompt
+  local built_context = ""
+  if resuming then
+    prompt = message
+  else
+    local ok, context_result = pcall(build_context)
+    if not ok then
+      logger.info("context build failed: %s", tostring(context_result))
+      finish_session(session, "error", { error = context_result })
+      return
+    end
+    built_context = context_result
+    prompt = build_prompt(message, built_context, opts.skip_system_prompt)
   end
 
-  local prompt = build_prompt(message, built_context, opts.skip_system_prompt)
   local run_cmd = vim.list_extend(vim.deepcopy(cmd), { prompt })
 
   logger.session_begin(session, {
@@ -437,6 +487,7 @@ start_session = function(opts)
   local process, err = runner.start(session, run_cmd, {
     on_event = function(event)
       if not session_active(session) then return end
+      capture_chat_from_event(event, bufnr, message)
       if handle_stream_event(session, event) then return end
       if event and event.type and not KNOWN_NOOP_EVENT_TYPES[event.type] then
         logger.debug(
@@ -603,8 +654,16 @@ function M.setup(opts)
   end, { desc = "Generate a tutorial via curse" })
 
   vim.api.nvim_create_user_command("CurseModel", function()
-    require("curse.model").prompt()
+    M.select_model()
   end, { desc = "Select cursor-agent model" })
+
+  vim.api.nvim_create_user_command("CurseNew", function()
+    M.new_chat()
+  end, { desc = "Start a new cursor-agent chat session" })
+
+  vim.api.nvim_create_user_command("CurseSessions", function()
+    M.select_chat()
+  end, { desc = "Select a cursor-agent chat session" })
 end
 
 function M.cancel()
@@ -642,6 +701,41 @@ function M.select_model()
   require("curse.model").prompt()
 end
 
-M.component = require("curse.component")
+M.list_models = require("curse.models").list
+
+---@param opts? { workspace?: string, all_workspaces?: boolean }
+---@param callback fun(chats: CurseChatEntry[], err?: string)
+function M.list_chats(opts, callback)
+  require("curse.chat_store").list(opts, callback)
+end
+
+---@return CurseChat?
+function M.get_active_chat()
+  return chats.get_active()
+end
+
+---@param id string
+function M.set_active_chat(id)
+  chats.set_active({ id = id })
+end
+
+---@param opts? { workspace?: string, all_workspaces?: boolean }
+function M.select_chat(opts)
+  local chat_cfg = config.get().chat or {}
+  opts = opts or {}
+  if not opts.workspace then
+    local bufnr = vim.api.nvim_get_current_buf()
+    opts.workspace = workspace_for(bufnr)
+  end
+  if opts.all_workspaces == nil then
+    opts.all_workspaces = chat_cfg.all_workspaces
+  end
+  require("curse.chat_picker").prompt(opts)
+end
+
+function M.new_chat()
+  chats.clear_active()
+  interaction.notify("curse: new session started", vim.log.levels.INFO, { title = "curse" })
+end
 
 return M

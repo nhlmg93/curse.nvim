@@ -8,6 +8,7 @@ Inspired by and adapted from [pi.nvim](https://github.com/pablopunk/pi.nvim) by 
 
 - Neovim 0.10+
 - `cursor-agent` installed and on your `PATH`
+- `sqlite3` on your `PATH` (for the session picker)
 
 ## Installation
 
@@ -39,6 +40,8 @@ require("curse").setup()
 | `:CurseCancel` | Cancel the active request |
 | `:CurseLog` | Open the session log |
 | `:CurseModel` | Select cursor-agent model for this session |
+| `:CurseNew` | Start a new cursor-agent chat on the next ask |
+| `:CurseSessions` | Pick a previous cursor-agent chat session |
 | `:CurseSearch` | Semantic project search → quickfix list |
 | `:CurseTutorial` | Generate a markdown tutorial in a split |
 
@@ -60,11 +63,12 @@ require("curse").setup({
   },
   search = { mode = "ask" },    -- optional per-task overrides
   tutorial = { mode = "ask" },
-  picker = {
-    -- optional; omit to use plain Neovim vim.ui.select for :CurseModel
+  chat = {
+    -- storage_path = nil,       -- default: ~/.config/cursor/chats or ~/.cursor/chats
+    -- all_workspaces = false,   -- picker lists current workspace only by default
   },
   ui = {
-    -- optional; omit to use plain Neovim vim.ui.input / vim.notify
+    -- optional; omit to use plain Neovim vim.ui.input / vim.notify / vim.ui.select
   },
 })
 ```
@@ -73,90 +77,78 @@ Set `log = { enabled = false }` to disable file logging entirely.
 
 Set `vim.g.curse_debug = true` to enable debug output regardless of config.
 
+## Chat sessions
+
+Ask commands reuse the same **cursor-agent chat** until `:CurseNew` or Neovim exit:
+
+- First `:CurseAsk` in a chat sends the curse system prompt, your message, and buffer context
+- Follow-up asks send **only your message** and resume via `--resume`
+- `:CurseNew` clears the active chat; the next ask starts fresh
+- `:CurseSearch` and `:CurseTutorial` do not reuse or affect the ask chat
+
+Session list comes from cursor-agent's on-disk storage (`~/.config/cursor/chats/…`), not an in-memory registry — so you can pick up prior sessions after restarting Neovim.
+
+### Public API
+
+| Function | Purpose |
+|----------|---------|
+| `curse.list_chats(opts?, callback)` | List stored chats; `callback(chats, err?)` |
+| `curse.get_active_chat()` | Active chat or nil |
+| `curse.set_active_chat(id)` | Set active chat for next ask |
+| `curse.select_chat(opts?)` | Built-in session picker |
+| `curse.new_chat()` | Clear active chat |
+
+Each `CurseChatEntry`: `{ id, name, workspace, workspace_hash, created_at, model? }`.
+
+### Custom session picker
+
+```lua
+vim.keymap.set("n", "<leader>cs", function()
+  require("curse").list_chats({ workspace = vim.fn.getcwd() }, function(chats)
+    require("mini.pick").ui_select(chats, {
+      prompt = "Curse session: ",
+      format_item = function(c) return c.name end,
+    }, function(choice)
+      if choice then require("curse").set_active_chat(choice.id) end
+    end)
+  end)
+end)
+```
+
 ## Model switching
 
 - Default model is `composer-2.5-fast`
 - `setup({ model = "..." })` sets the default used on each Neovim start
 - `:CurseModel` or `curse.select_model()` switches the model for the current session only (in-memory; restart restores your setup default)
 - Model list is fetched from `cursor-agent models` (account-specific)
-- Model picker uses plain Neovim `vim.ui.select` by default via the `component` module
-- Public API: `curse.get_model()`, `curse.set_model(slug)`, `curse.select_model()`, `curse.component`
+- `:CurseModel` uses plain Neovim `vim.ui.select` by default (via `ui.select` hook when configured)
 
-## Model picker (optional)
+### Public API
 
-The model picker lives in `curse.component`. Override `picker.backend` to use mini.pick, snacks, telescope, or another UI:
+| Function | Purpose |
+|----------|---------|
+| `curse.list_models(callback)` | Async fetch; `callback(models, err?)` |
+| `curse.get_model()` | Current session slug |
+| `curse.set_model(slug)` | Set session slug |
+| `curse.select_model()` | Built-in model picker |
 
-```lua
-local component = require("curse.component")
-
-require("curse").setup({
-  picker = {
-    backend = function(items, opts, on_choice)
-      require("mini.pick").ui_select()(items, {
-        prompt = opts.prompt,
-        format_item = function(entry)
-          return component.format_model_item(entry, opts.active)
-        end,
-      }, on_choice)
-    end,
-  },
-})
-```
-
-**snacks.nvim:**
-
-```lua
-local component = require("curse.component")
-
-require("curse").setup({
-  picker = {
-    backend = function(items, opts, on_choice)
-      require("snacks.picker").select(items, {
-        prompt = opts.prompt,
-        format_item = function(entry)
-          return component.format_model_item(entry, opts.active)
-        end,
-      }, on_choice)
-    end,
-  },
-})
-```
-
-**telescope.nvim** (Neovim 0.11+ built-in picker or telescope extension):
-
-```lua
-local component = require("curse.component")
-
-require("curse").setup({
-  picker = {
-    backend = function(items, opts, on_choice)
-      vim.pick.select(items, {
-        prompt = opts.prompt,
-        format_item = function(entry)
-          return component.format_model_item(entry, opts.active)
-        end,
-      }, on_choice)
-    end,
-  },
-})
-```
-
-Backend signature: `function(items: CurseModelEntry[], opts: { prompt?, active? }, on_choice: fun(choice?))`. Use `component.format_model_item(entry, opts.active)` for consistent labels.
+Each `CurseModelEntry`: `{ id, name, default?, current? }`.
 
 ## Custom UI (optional)
 
-By default, curse uses plain Neovim UI for prompts and notifications. Override hooks in config:
+By default, curse uses plain Neovim UI for prompts, notifications, and pickers. Override hooks in config:
 
 ```lua
 require("curse").setup({
   ui = {
     -- input = function(opts, on_confirm) ... end,
     -- notify = function(msg, level, opts) ... end,
+    -- select = function(items, opts, on_choice) ... end,
   },
 })
 ```
 
-Note: model selection uses `picker.backend`, not `ui.select`.
+`:CurseModel` and `:CurseSessions` respect `ui.select` when set.
 
 ## Behavior
 

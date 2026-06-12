@@ -18,13 +18,9 @@
 ---@field input? fun(opts: table, on_confirm: fun(input?: string))
 ---@field select? fun(items: table[], opts: table, on_choice: fun(choice?: any, idx?: integer))
 
----@class CursePickerOpts
----@field prompt? string
----@field active? string
----@field items? CurseModelEntry[]
-
----@class CursePickerConfig
----@field backend? fun(items: CurseModelEntry[], opts: CursePickerOpts, on_choice: fun(choice?: CurseModelEntry))
+---@class CurseChatConfig
+---@field storage_path? string
+---@field all_workspaces? boolean
 
 ---@class CurseConfig
 ---@field mode? "plan"|"ask"|nil
@@ -34,8 +30,8 @@
 ---@field log? CurseLogConfig
 ---@field search? CurseTaskConfig
 ---@field tutorial? CurseTaskConfig
+---@field chat? CurseChatConfig
 ---@field ui? CurseUiConfig
----@field picker? CursePickerConfig
 
 local M = {}
 

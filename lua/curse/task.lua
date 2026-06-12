@@ -23,7 +23,7 @@ end
 ---@return string[]
 function M.cmd_for(bufnr, task_cfg)
   local curse = require("curse")
-  local cmd = curse.get_cmd(bufnr)
+  local cmd = curse.get_cmd(bufnr, { reuse_chat = false })
 
   local mode = (task_cfg and task_cfg.mode) or "ask"
   override_flag(cmd, "--mode", mode)
@@ -71,6 +71,7 @@ function M.run(opts)
       return context.get_workspace_context(bufnr, cfg)
     end,
     reload = false,
+    reuse_chat = false,
     skip_system_prompt = true,
     capture_output = true,
     require_file_backed = false,
