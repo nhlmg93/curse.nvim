@@ -27,24 +27,37 @@ local function process_line(line, on_event, on_error)
   end
 end
 
----@param session CurseSession
----@param key "stdout_tail"|"stderr_tail"
----@param chunk string
----@param on_event fun(event: table)
----@param on_error? fun(line: string)
-local function feed_stream(session, key, chunk, on_event, on_error)
-  if session.cancelled or not chunk or chunk == "" then return end
+---@param on_line fun(line: string)
+---@return fun(chunk: string), fun(): string
+local function make_stream_feeder(on_line)
+  local parts = {}
 
-  session[key] = (session[key] or "") .. chunk
+  local function feed(chunk)
+    if not chunk or chunk == "" then return end
+    parts[#parts + 1] = chunk
 
-  while true do
-    local newline = session[key]:find("\n", 1, true)
-    if not newline then break end
+    local data = table.concat(parts)
+    local from = 1
+    local nl = data:find("\n", from, true)
+    while nl do
+      on_line(data:sub(from, nl - 1))
+      from = nl + 1
+      nl = data:find("\n", from, true)
+    end
 
-    local line = session[key]:sub(1, newline - 1)
-    session[key] = session[key]:sub(newline + 1)
-    process_line(line, on_event, on_error)
+    if from == 1 then
+      return
+    end
+
+    parts = { data:sub(from) }
   end
+
+  local function tail()
+    if #parts == 0 then return "" end
+    return table.concat(parts)
+  end
+
+  return feed, tail
 end
 
 ---@class RunnerHandlers
@@ -58,8 +71,12 @@ end
 ---@param handlers RunnerHandlers
 ---@return vim.SystemObj?, string?
 function M.start(session, cmd, handlers)
-  session.stdout_tail = ""
-  session.stderr_tail = ""
+  local feed_stdout, stdout_tail = make_stream_feeder(function(line)
+    process_line(line, handlers.on_event, nil)
+  end)
+  local feed_stderr, stderr_tail = make_stream_feeder(function(line)
+    process_line(line, function() end, handlers.on_stderr)
+  end)
 
   logger.debug("starting process cmd=%s", table.concat(cmd, " "))
 
@@ -67,22 +84,24 @@ function M.start(session, cmd, handlers)
     text = true,
     stdout = vim.schedule_wrap(function(err, data)
       if err then handlers.on_error(err); return end
-      feed_stream(session, "stdout_tail", data, handlers.on_event, nil)
+      if session.cancelled then return end
+      feed_stdout(data)
     end),
     stderr = vim.schedule_wrap(function(err, data)
       if err then handlers.on_error(err); return end
-      feed_stream(session, "stderr_tail", data, function() end, handlers.on_stderr)
+      if session.cancelled then return end
+      feed_stderr(data)
     end),
   }, vim.schedule_wrap(function(result)
-    if session.stdout_tail and session.stdout_tail ~= "" then
-      process_line(session.stdout_tail, handlers.on_event, nil)
+    local remaining_stdout = stdout_tail()
+    if remaining_stdout ~= "" then
+      process_line(remaining_stdout, handlers.on_event, nil)
     end
-    session.stdout_tail = ""
 
-    if session.stderr_tail and session.stderr_tail ~= "" then
-      handlers.on_stderr(session.stderr_tail)
+    local remaining_stderr = stderr_tail()
+    if remaining_stderr ~= "" then
+      handlers.on_stderr(remaining_stderr)
     end
-    session.stderr_tail = ""
 
     handlers.on_exit(result)
   end))

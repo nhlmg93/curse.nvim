@@ -1,5 +1,6 @@
 local config = require("curse.config")
 local context = require("curse.context")
+local interaction = require("curse.interaction")
 
 local M = {}
 
@@ -22,16 +23,13 @@ end
 ---@return string[]
 function M.cmd_for(bufnr, task_cfg)
   local curse = require("curse")
-  local cfg = config.get()
   local cmd = curse.get_cmd(bufnr)
 
   local mode = (task_cfg and task_cfg.mode) or "ask"
   override_flag(cmd, "--mode", mode)
 
-  local model = task_cfg and task_cfg.model or cfg.model
-  if model then
-    override_flag(cmd, "--model", model)
-  end
+  local model = (task_cfg and task_cfg.model) or config.get_model()
+  override_flag(cmd, "--model", model)
 
   return cmd
 end
@@ -54,7 +52,6 @@ function M.build_message(instructions, query)
 end
 
 ---@class CurseTaskRunOpts
----@field label string
 ---@field instructions string
 ---@field query string
 ---@field task_cfg? CurseTaskConfig
@@ -86,7 +83,7 @@ end
 ---@param prompt string
 ---@param run fun(query: string)
 function M.prompt(prompt, run)
-  vim.ui.input({ prompt = prompt }, function(input)
+  interaction.input({ prompt = prompt }, function(input)
     if input and input ~= "" then
       run(input)
     end

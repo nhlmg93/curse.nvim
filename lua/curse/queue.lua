@@ -1,16 +1,6 @@
 local M = {}
 
----@class QueueItem
----@field message string
----@field bufnr integer
----@field range? CurseLineRange
----@field build_context? fun(): string
----@field cmd? string[]
----@field reload? boolean
----@field skip_system_prompt? boolean
----@field capture_output? boolean
----@field require_file_backed? boolean
----@field on_complete? fun(session: CurseSession, output: string)
+---@alias QueueItem CurseRunOpts
 
 ---@type QueueItem[]
 local items = {}
@@ -31,13 +21,6 @@ end
 ---@return integer
 function M.size()
   return #items
-end
-
----@return integer cleared
-function M.clear()
-  local n = #items
-  items = {}
-  return n
 end
 
 return M

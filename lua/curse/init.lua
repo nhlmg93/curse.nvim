@@ -1,5 +1,6 @@
 local config = require("curse.config")
 local context = require("curse.context")
+local interaction = require("curse.interaction")
 local logger = require("curse.logger")
 local queue = require("curse.queue")
 local runner = require("curse.runner")
@@ -14,9 +15,11 @@ local ui = require("curse.ui")
 ---@field show_log fun()
 ---@field is_running fun(): boolean
 ---@field queue_size fun(): integer
+---@field get_model fun(): string
+---@field set_model fun(slug: string)
+---@field select_model fun()
 ---@field get_cmd fun(bufnr?: integer): string[]
----@field handles_stream_event fun(event: table): boolean
----@field tool_name_from_call fun(tool_call: table?): string
+---@field component table
 
 ---@class CurseRunOpts
 ---@field message string
@@ -43,15 +46,11 @@ local ui = require("curse.ui")
 ---@field cancelled boolean
 ---@field saw_terminal_event boolean
 ---@field history string[]
----@field message string?
 ---@field last_notified_signature string?
----@field stdout_tail string?
----@field stderr_tail string?
 ---@field reload? boolean
----@field skip_system_prompt? boolean
 ---@field capture_output? boolean
----@field require_file_backed? boolean
 ---@field on_complete? fun(session: CurseSession, output: string)
+---@field output_parts? string[]
 ---@field output? string
 
 ---@type curse
@@ -67,7 +66,7 @@ local function new_session(source_bufnr)
   next_session_id = next_session_id + 1
   return {
     id = next_session_id,
-    status = "idle",
+    status = "collecting_context",
     process = nil,
     source_bufnr = source_bufnr,
     started_at = vim.loop.hrtime(),
@@ -78,7 +77,6 @@ local function new_session(source_bufnr)
     cancelled = false,
     saw_terminal_event = false,
     history = {},
-    message = nil,
   }
 end
 
@@ -119,7 +117,7 @@ end
 local function ensure_file_backed_buffer()
   local bufnr = vim.api.nvim_get_current_buf()
   if not context.buffer_is_file_backed(bufnr) then
-    vim.notify("Curse requires a file-backed buffer", vim.log.levels.ERROR)
+    interaction.notify("Curse requires a file-backed buffer", vim.log.levels.ERROR)
     return nil
   end
   return bufnr
@@ -145,10 +143,8 @@ function M.get_cmd(bufnr)
     table.insert(cmd, "--mode")
     table.insert(cmd, cfg.mode)
   end
-  if cfg.model then
-    table.insert(cmd, "--model")
-    table.insert(cmd, cfg.model)
-  end
+  table.insert(cmd, "--model")
+  table.insert(cmd, config.get_model())
   return cmd
 end
 
@@ -183,7 +179,7 @@ local function set_status(session, status, message)
   if session.status == status and not message then return end
   session.status = status
   if message then push_history(session, message) end
-  ui.update(session, ui_opts())
+  ui.render(session, ui_opts())
 end
 
 -- Reload only the ask source buffer after a successful run. Context is scoped to
@@ -195,20 +191,31 @@ local function reload_source_buffer(session)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
   if not context.buffer_is_file_backed(bufnr) then return end
 
-  local path = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":p")
-  if vim.fn.filereadable(path) ~= 1 then return end
+  local path = source_path_for(bufnr)
+  if not path or vim.fn.filereadable(path) ~= 1 then return end
 
-  pcall(function()
+  local ok, err = pcall(function()
     vim.api.nvim_buf_call(bufnr, function()
       local view = vim.api.nvim_get_current_buf() == bufnr and vim.fn.winsaveview() or nil
       vim.cmd("silent edit!")
       if view then vim.fn.winrestview(view) end
     end)
   end)
+  if not ok then
+    logger.debug("buffer reload failed: %s", tostring(err))
+  end
 end
 
 local start_session
 local process_next
+
+---@param session CurseSession
+---@return string
+local function session_output(session)
+  if session.output then return session.output end
+  if session.output_parts then return table.concat(session.output_parts) end
+  return ""
+end
 
 ---@param session CurseSession
 ---@param status CurseStatus
@@ -228,22 +235,22 @@ local function finish_session(session, status, opts)
 
   if status == "cancelled" then
     runner.cancel(session)
-    ui.close(session, ui_opts())
-  elseif status == "error" then
-    ui.update(session, ui_opts())
-  else
+  elseif status ~= "error" then
+    if session.capture_output and session.output_parts and not session.output then
+      session.output = table.concat(session.output_parts)
+    end
     if session.on_complete then
-      local ok, err = pcall(session.on_complete, session, session.output or "")
+      local ok, err = pcall(session.on_complete, session, session_output(session))
       if not ok then
-        vim.notify("curse on_complete error: " .. tostring(err), vim.log.levels.ERROR)
+        interaction.notify("curse on_complete error: " .. tostring(err), vim.log.levels.ERROR)
       end
     end
     if not session.cancelled and session.reload ~= false then
       reload_source_buffer(session)
     end
-    ui.close(session, ui_opts())
   end
 
+  ui.render(session, ui_opts())
   runner.finish(session)
 
   logger.session_end(session, {
@@ -262,9 +269,29 @@ local KNOWN_NOOP_EVENT_TYPES = {
   assistant = true,
 }
 
+---@param event table
+---@return string?
+local function event_subtype(event)
+  return event.subtype or event.subType
+end
+
+---@param event table
+---@return boolean
+local function result_is_success(event)
+  local sub = event_subtype(event)
+  return sub == "success" or event.is_error == false
+end
+
+---@param event table
+---@return boolean
+local function result_is_error(event)
+  local sub = event_subtype(event)
+  return sub == "error" or event.is_error
+end
+
 ---@param tool_call table?
 ---@return string
-function M.tool_name_from_call(tool_call)
+local function tool_name_from_call(tool_call)
   if not tool_call then return "unknown" end
   for name in pairs(tool_call) do
     if name:match("ToolCall$") then
@@ -272,31 +299,6 @@ function M.tool_name_from_call(tool_call)
     end
   end
   return "unknown"
-end
-
----@param event table
----@return boolean
-function M.handles_stream_event(event)
-  if not event or not event.type then return false end
-
-  if event.type == "thinking" then
-    local sub = event.subtype or event.subType
-    return sub == "delta" or sub == "completed"
-  end
-
-  if event.type == "tool_call" then
-    local sub = event.subtype or event.subType
-    return sub == "started" or sub == "completed"
-  end
-
-  if event.type == "result" then
-    local sub = event.subtype or event.subType
-    if sub == "success" or event.is_error == false then return true end
-    if sub == "error" or event.is_error then return true end
-    return false
-  end
-
-  return false
 end
 
 ---@param content table[]?
@@ -323,14 +325,13 @@ local function capture_output_from_event(session, event)
       text = text_from_content(event.message.content)
     end
     if text and text ~= "" then
-      session.output = (session.output or "") .. text
+      session.output_parts[#session.output_parts + 1] = text
     end
     return
   end
 
-  if event.type == "result" then
-    local sub = event.subtype or event.subType
-    if (sub == "success" or event.is_error == false) and type(event.result) == "string" and event.result ~= "" then
+  if event.type == "result" and result_is_success(event) then
+    if type(event.result) == "string" and event.result ~= "" then
       session.output = event.result
     end
   end
@@ -349,7 +350,7 @@ local function handle_stream_event(session, event)
   end
 
   if event.type == "thinking" then
-    local sub = event.subtype or event.subType
+    local sub = event_subtype(event)
     if sub == "delta" or sub == "completed" then
       set_status(session, "thinking")
       return true
@@ -358,9 +359,9 @@ local function handle_stream_event(session, event)
   end
 
   if event.type == "tool_call" then
-    local sub = event.subtype or event.subType
+    local sub = event_subtype(event)
     if sub == "started" then
-      session.active_tool = M.tool_name_from_call(event.tool_call)
+      session.active_tool = tool_name_from_call(event.tool_call)
       set_status(session, "running_tool")
       return true
     end
@@ -373,13 +374,12 @@ local function handle_stream_event(session, event)
   end
 
   if event.type == "result" then
-    local sub = event.subtype or event.subType
-    if sub == "success" or event.is_error == false then
+    if result_is_success(event) then
       session.saw_terminal_event = true
       finish_session(session, "done")
       return true
     end
-    if sub == "error" or event.is_error then
+    if result_is_error(event) then
       session.saw_terminal_event = true
       finish_session(session, "error", { error = event.error or event.result or "unknown error" })
       return true
@@ -405,17 +405,15 @@ start_session = function(opts)
   end
 
   local session = new_session(bufnr)
-  session.message = message
   session.reload = opts.reload
-  session.skip_system_prompt = opts.skip_system_prompt
   session.capture_output = opts.capture_output
-  session.require_file_backed = opts.require_file_backed
   session.on_complete = opts.on_complete
-  session.output = opts.capture_output and "" or nil
+  if opts.capture_output then
+    session.output_parts = {}
+  end
   active_session = session
 
-  ui.open(session, ui_opts())
-  set_status(session, "collecting_context")
+  ui.render(session, ui_opts())
 
   local ok, built_context = pcall(build_context)
   if not ok then
@@ -444,7 +442,7 @@ start_session = function(opts)
         logger.debug(
           "unhandled event type=%s subtype=%s",
           tostring(event.type),
-          tostring(event.subtype or event.subType)
+          tostring(event_subtype(event))
         )
       end
     end,
@@ -452,7 +450,7 @@ start_session = function(opts)
     on_stderr = function(line)
       if not session_active(session) then return end
       push_history(session, line)
-      ui.update(session, ui_opts())
+      ui.render(session, ui_opts())
     end,
 
     on_error = function(error_message)
@@ -494,7 +492,7 @@ process_next = function()
     local buf_ok = vim.api.nvim_buf_is_valid(item.bufnr)
     local file_ok = item.require_file_backed == false or context.buffer_is_file_backed(item.bufnr)
     if not buf_ok or not file_ok then
-      vim.notify("Skipped queued message: buffer no longer available", vim.log.levels.WARN)
+      interaction.notify("Skipped queued message: buffer no longer available", vim.log.levels.WARN)
     else
       start_session(item)
       return
@@ -506,15 +504,15 @@ end
 function M.run(opts)
   opts = vim.deepcopy(opts or {})
   if not opts.message or opts.message == "" then
-    vim.notify("No message provided", vim.log.levels.ERROR)
+    interaction.notify("No message provided", vim.log.levels.ERROR)
     return
   end
   opts.bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
 
   if active_session then
     local position = queue.enqueue(opts)
-    vim.notify(("Queued (position %d)"):format(position), vim.log.levels.INFO)
-    ui.update(active_session, ui_opts())
+    interaction.notify(("Queued (position %d)"):format(position), vim.log.levels.INFO)
+    ui.render(active_session, ui_opts())
     return
   end
 
@@ -562,7 +560,7 @@ function M.prompt(range)
   local bufnr = ensure_file_backed_buffer()
   if not bufnr then return end
 
-  vim.ui.input({ prompt = context.format_prompt_label(bufnr, range) }, function(input)
+  interaction.input({ prompt = context.format_prompt_label(bufnr, range) }, function(input)
     if input and input ~= "" then
       M.run({
         message = input,
@@ -603,6 +601,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("CurseTutorial", function()
     tutorial.prompt()
   end, { desc = "Generate a tutorial via curse" })
+
+  vim.api.nvim_create_user_command("CurseModel", function()
+    require("curse.model").prompt()
+  end, { desc = "Select cursor-agent model" })
 end
 
 function M.cancel()
@@ -625,5 +627,21 @@ end
 function M.queue_size()
   return queue.size()
 end
+
+---@return string
+function M.get_model()
+  return config.get_model()
+end
+
+---@param slug string
+function M.set_model(slug)
+  config.set_model(slug)
+end
+
+function M.select_model()
+  require("curse.model").prompt()
+end
+
+M.component = require("curse.component")
 
 return M

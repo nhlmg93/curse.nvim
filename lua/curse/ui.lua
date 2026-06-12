@@ -1,3 +1,5 @@
+local interaction = require("curse.interaction")
+
 local M = {}
 
 ---@type table<CurseStatus, string>
@@ -12,12 +14,6 @@ local labels = {
 
 ---@class UiOpts
 ---@field queued? integer
-
----@param session CurseSession
----@return string
-local function title_for(session)
-  return session.status == "error" and "curse error" or "curse"
-end
 
 ---@param session CurseSession
 ---@param opts? UiOpts
@@ -47,7 +43,7 @@ end
 
 ---@param session CurseSession
 ---@param opts? UiOpts
-local function render(session, opts)
+function M.render(session, opts)
   local message = status_line(session, opts)
   if not message then return end
 
@@ -62,28 +58,11 @@ local function render(session, opts)
   if session.last_notified_signature == signature then return end
   session.last_notified_signature = signature
 
+  local title = session.status == "error" and "curse error" or "curse"
   local level = session.status == "error" and vim.log.levels.ERROR
     or session.status == "cancelled" and vim.log.levels.WARN
     or vim.log.levels.INFO
-  vim.notify(message, level, { title = title_for(session) })
-end
-
----@param session CurseSession
----@param opts? UiOpts
-function M.open(session, opts)
-  render(session, opts)
-end
-
----@param session CurseSession
----@param opts? UiOpts
-function M.update(session, opts)
-  render(session, opts)
-end
-
----@param session CurseSession
----@param opts? UiOpts
-function M.close(session, opts)
-  render(session, opts)
+  interaction.notify(message, level, { title = title })
 end
 
 return M

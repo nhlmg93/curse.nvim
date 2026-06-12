@@ -1,3 +1,5 @@
+local interaction = require("curse.interaction")
+
 local M = {}
 
 ---@param line string
@@ -52,10 +54,9 @@ function M.parse_quickfix_lines(text)
 end
 
 ---@param content string
----@param opts? { title?: string }
 function M.open_markdown(content)
   if not content or vim.trim(content) == "" then
-    vim.notify("curse: no content to display", vim.log.levels.INFO)
+    interaction.notify("curse: no content to display", vim.log.levels.INFO)
     return
   end
 
@@ -83,12 +84,12 @@ end
 function M.open_quickfix(items, title, notify_prefix)
   vim.fn.setqflist({}, "r", { title = title, items = items })
   if #items == 0 then
-    vim.notify(notify_prefix .. ": no results found", vim.log.levels.INFO)
+    interaction.notify(notify_prefix .. ": no results found", vim.log.levels.INFO)
     return
   end
 
   vim.cmd("copen")
-  vim.notify(
+  interaction.notify(
     string.format("%s: %d result%s", notify_prefix, #items, #items == 1 and "" or "s"),
     vim.log.levels.INFO
   )

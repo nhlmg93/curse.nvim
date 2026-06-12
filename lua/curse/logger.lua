@@ -7,16 +7,14 @@ local config = require("curse.config")
 
 local M = {}
 
-M.DEFAULT_PATH = "/tmp/curse.log"
-
 ---@return string
 local function format_time()
   return os.date("%Y-%m-%d %H:%M:%S")
 end
 
----@return table
+---@return CurseLogConfig
 local function log_cfg()
-  return config.get().log or {}
+  return config.get().log
 end
 
 ---@return boolean
@@ -27,13 +25,12 @@ end
 
 ---@return boolean
 local function file_enabled()
-  local cfg = log_cfg()
-  return cfg.enabled ~= false
+  return log_cfg().enabled ~= false
 end
 
 ---@return string
 local function log_path()
-  return log_cfg().path or M.DEFAULT_PATH
+  return log_cfg().path
 end
 
 ---@param msg string

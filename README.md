@@ -18,7 +18,6 @@ Inspired by and adapted from [pi.nvim](https://github.com/pablopunk/pi.nvim) by 
   "nhlmg93/curse.nvim",
   config = function()
     require("curse").setup({
-      -- model = "gpt-5",
       log = { debug = false },
     })
   end,
@@ -39,29 +38,16 @@ require("curse").setup()
 | `:CurseAsk` | Prompt cursor-agent with buffer context (supports a range) |
 | `:CurseCancel` | Cancel the active request |
 | `:CurseLog` | Open the session log |
+| `:CurseModel` | Select cursor-agent model for this session |
 | `:CurseSearch` | Semantic project search → quickfix list |
 | `:CurseTutorial` | Generate a markdown tutorial in a split |
-
-## Example keymaps
-
-```lua
-local curse = require("curse")
-
-vim.keymap.set("n", "<leader>ca", "<cmd>CurseAsk<cr>", { desc = "Curse: Ask" })
-vim.keymap.set("v", "<leader>ca", function()
-  local range = curse.visual_range()
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
-  vim.schedule(function() curse.prompt(range) end)
-end, { desc = "Curse: Ask (visual)" })
-vim.keymap.set("n", "<leader>cc", "<cmd>CurseCancel<cr>", { desc = "Curse: Cancel" })
-```
 
 ## Configuration
 
 ```lua
 require("curse").setup({
   mode = nil,           -- "plan" | "ask" | nil
-  model = nil,          -- passed to cursor-agent --model
+  model = "composer-2.5-fast",  -- default model; override at runtime with :CurseModel
   append_system_prompt = nil,
   context = {
     max_bytes = 24000,
@@ -74,6 +60,12 @@ require("curse").setup({
   },
   search = { mode = "ask" },    -- optional per-task overrides
   tutorial = { mode = "ask" },
+  picker = {
+    -- optional; omit to use plain Neovim vim.ui.select for :CurseModel
+  },
+  ui = {
+    -- optional; omit to use plain Neovim vim.ui.input / vim.notify
+  },
 })
 ```
 
@@ -81,10 +73,96 @@ Set `log = { enabled = false }` to disable file logging entirely.
 
 Set `vim.g.curse_debug = true` to enable debug output regardless of config.
 
+## Model switching
+
+- Default model is `composer-2.5-fast`
+- `setup({ model = "..." })` sets the default used on each Neovim start
+- `:CurseModel` or `curse.select_model()` switches the model for the current session only (in-memory; restart restores your setup default)
+- Model list is fetched from `cursor-agent models` (account-specific)
+- Model picker uses plain Neovim `vim.ui.select` by default via the `component` module
+- Public API: `curse.get_model()`, `curse.set_model(slug)`, `curse.select_model()`, `curse.component`
+
+## Model picker (optional)
+
+The model picker lives in `curse.component`. Override `picker.backend` to use mini.pick, snacks, telescope, or another UI:
+
+```lua
+local component = require("curse.component")
+
+require("curse").setup({
+  picker = {
+    backend = function(items, opts, on_choice)
+      require("mini.pick").ui_select()(items, {
+        prompt = opts.prompt,
+        format_item = function(entry)
+          return component.format_model_item(entry, opts.active)
+        end,
+      }, on_choice)
+    end,
+  },
+})
+```
+
+**snacks.nvim:**
+
+```lua
+local component = require("curse.component")
+
+require("curse").setup({
+  picker = {
+    backend = function(items, opts, on_choice)
+      require("snacks.picker").select(items, {
+        prompt = opts.prompt,
+        format_item = function(entry)
+          return component.format_model_item(entry, opts.active)
+        end,
+      }, on_choice)
+    end,
+  },
+})
+```
+
+**telescope.nvim** (Neovim 0.11+ built-in picker or telescope extension):
+
+```lua
+local component = require("curse.component")
+
+require("curse").setup({
+  picker = {
+    backend = function(items, opts, on_choice)
+      vim.pick.select(items, {
+        prompt = opts.prompt,
+        format_item = function(entry)
+          return component.format_model_item(entry, opts.active)
+        end,
+      }, on_choice)
+    end,
+  },
+})
+```
+
+Backend signature: `function(items: CurseModelEntry[], opts: { prompt?, active? }, on_choice: fun(choice?))`. Use `component.format_model_item(entry, opts.active)` for consistent labels.
+
+## Custom UI (optional)
+
+By default, curse uses plain Neovim UI for prompts and notifications. Override hooks in config:
+
+```lua
+require("curse").setup({
+  ui = {
+    -- input = function(opts, on_confirm) ... end,
+    -- notify = function(msg, level, opts) ... end,
+  },
+})
+```
+
+Note: model selection uses `picker.backend`, not `ui.select`.
+
 ## Behavior
 
 - Runs `cursor-agent` asynchronously via `vim.system`
-- Shows status with `vim.notify`
+- Passes the active model to every run via `--model` (task-specific `search.model` / `tutorial.model` overrides still apply when configured)
+- Shows status with `vim.notify` (or your `ui.notify` hook)
 - Queues additional requests while one is active
 - Reloads the source buffer after a successful ask
 - Search and tutorial run in read-only `ask` mode and present output via quickfix or a markdown split

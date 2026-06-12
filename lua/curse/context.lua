@@ -1,3 +1,5 @@
+local config = require("curse.config")
+
 local M = {}
 
 M.system_prompt = [[You are running inside curse.nvim. The user has sent a request and will not be able to reply back. You must complete the task immediately without asking questions. Take action now and do what was asked.
@@ -15,15 +17,15 @@ function M.buffer_is_file_backed(bufnr)
 end
 
 ---@param bufnr integer
----@return string, string, {[1]: string, [2]: string, [3]: string}
+---@return string[], string
 local function header(bufnr)
   local filename = vim.api.nvim_buf_get_name(bufnr)
   local filetype = vim.bo[bufnr].filetype ~= "" and vim.bo[bufnr].filetype or "text"
-  return filename, filetype, {
+  return {
     ("File: %s"):format(filename),
     ("Cwd: %s"):format(vim.fn.getcwd()),
     ("Filetype: %s"):format(filetype),
-  }
+  }, filetype
 end
 
 ---@param text string
@@ -41,7 +43,7 @@ end
 ---@param max_bytes? integer
 ---@return string
 local function format_context(bufnr, label, code_label, lines, max_bytes)
-  local _, filetype, hdr = header(bufnr)
+  local hdr, filetype = header(bufnr)
   local parts = {}
   vim.list_extend(parts, hdr)
   vim.list_extend(parts, { label, BUFFER_NOTE })
@@ -104,10 +106,11 @@ end
 function M.format_prompt_label(bufnr, range)
   local filename = vim.api.nvim_buf_get_name(bufnr)
   local name = filename ~= "" and vim.fn.fnamemodify(filename, ":t") or nil
+  local model = config.get_model()
   if range then
-    return ("curse ask (%s:%d-%d): "):format(name or "?", range.start, range["end"])
+    return ("curse ask [%s] (%s:%d-%d): "):format(model, name or "?", range.start, range["end"])
   end
-  return ("curse ask (%s): "):format(name or "?")
+  return ("curse ask [%s] (%s): "):format(model, name or "?")
 end
 
 return M

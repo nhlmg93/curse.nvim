@@ -1,4 +1,5 @@
 local config = require("curse.config")
+local interaction = require("curse.interaction")
 local present = require("curse.present")
 local task = require("curse.task")
 
@@ -19,7 +20,7 @@ Use project context only as background. Keep the tutorial focused on the user's 
 ---@param output string
 local function present_output(output)
   if not output or vim.trim(output) == "" then
-    vim.notify("curse tutorial: no content found", vim.log.levels.INFO)
+    interaction.notify("curse tutorial: no content found", vim.log.levels.INFO)
     return
   end
   present.open_markdown(output)
@@ -28,7 +29,6 @@ end
 ---@param query string
 function M.run(query)
   task.run({
-    label = "tutorial",
     instructions = INSTRUCTIONS,
     query = query,
     task_cfg = config.get().tutorial,

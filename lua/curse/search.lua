@@ -1,4 +1,5 @@
 local config = require("curse.config")
+local interaction = require("curse.interaction")
 local present = require("curse.present")
 local task = require("curse.task")
 
@@ -31,7 +32,7 @@ local function present_output(output)
         .. "_Expected quickfix lines (`path:lnum:col,line_count,notes`). Raw output:_\n\n"
         .. output
     )
-    vim.notify("curse search: could not parse results; showing raw output", vim.log.levels.WARN)
+    interaction.notify("curse search: could not parse results; showing raw output", vim.log.levels.WARN)
     return
   end
 
@@ -41,7 +42,6 @@ end
 ---@param query string
 function M.run(query)
   task.run({
-    label = "search",
     instructions = INSTRUCTIONS,
     query = query,
     task_cfg = config.get().search,
