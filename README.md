@@ -4,6 +4,39 @@ Neovim integration for the [cursor-agent](https://cursor.com) CLI. Send prompts 
 
 Inspired by and adapted from [pi.nvim](https://github.com/pablopunk/pi.nvim) by [pablopunk](https://github.com/pablopunk). Thank you for the original architecture and patterns.
 
+## Demos
+
+A quick walkthrough of Ask, Search, and Tutorial:
+
+![Overview](demos/out/overview.gif)
+
+<details>
+<summary>Per-feature demos</summary>
+
+### `:CurseAsk` — ask with buffer context, edits applied in place
+
+![CurseAsk](demos/out/ask.gif)
+
+### `:CurseAsk` over a visual selection
+
+![CurseAsk visual range](demos/out/ask-visual.gif)
+
+### `:CurseSearch` — semantic search into the quickfix list
+
+![CurseSearch](demos/out/search.gif)
+
+### `:CurseTutorial` — generate a markdown tutorial
+
+![CurseTutorial](demos/out/tutorial.gif)
+
+### `:CurseSessions` — reuse and pick chat sessions
+
+![CurseSessions](demos/out/sessions.gif)
+
+</details>
+
+GIFs are recorded with [VHS](https://github.com/charmbracelet/vhs).
+
 ## Requirements
 
 - Neovim 0.10+
