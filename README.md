@@ -1,6 +1,6 @@
 # curse.nvim
 
-Neovim integration for the [cursor-agent](https://cursor.com) CLI. Send prompts from your editor, stream agent status, reload changed buffers on success, and run read-only search and tutorial tasks.
+Neovim integration for the [cursor-agent](https://cursor.com) CLI. Send prompts from your editor, stream agent status, reload changed buffers on success, open an interactive chat split, and run read-only search and tutorial tasks.
 
 Inspired by and adapted from [pi.nvim](https://github.com/pablopunk/pi.nvim) by [pablopunk](https://github.com/pablopunk). Thank you for the original architecture and patterns.
 
@@ -37,9 +37,9 @@ require("curse").setup()
 | Command | Description |
 |---------|-------------|
 | `:CurseAsk` | Prompt cursor-agent with buffer context (supports a range) |
+| `:CurseChat` | Open an interactive cursor-agent chat in a terminal split |
 | `:CurseCancel` | Cancel the active request |
 | `:CurseLog` | Open the session log |
-| `:CurseModel` | Select cursor-agent model for this session |
 | `:CurseNew` | Start a new cursor-agent chat on the next ask |
 | `:CurseSessions` | Pick a previous cursor-agent chat session |
 | `:CurseSearch` | Semantic project search → quickfix list |
@@ -49,21 +49,18 @@ require("curse").setup()
 
 ```lua
 require("curse").setup({
-  mode = nil,           -- "plan" | "ask" | nil
-  model = "composer-2.5-fast",  -- default model; override at runtime with :CurseModel
-  append_system_prompt = nil,
-  context = {
-    max_bytes = 24000,
-    ask = { surrounding_lines = 80 },
-  },
+  binary = { "cursor-agent" },  -- string or argv prefix; paths are expanded
+  skills = true,                -- pass bundled plugin dir for agent skills
+  mode = nil,                   -- "plan" | "ask" | nil
   log = {
     enabled = true,
     path = "/tmp/curse.log",
-    debug = false,      -- debug logs print to :messages and the log file
+    debug = false,              -- debug logs print to :messages and the log file
   },
-  search = { mode = "ask" },    -- optional per-task overrides
+  search = { mode = "ask" },
   tutorial = { mode = "ask" },
   chat = {
+    height = 35,                -- split height as % of editor lines
     -- storage_path = nil,       -- default: ~/.config/cursor/chats or ~/.cursor/chats
     -- all_workspaces = false,   -- picker lists current workspace only by default
   },
@@ -87,17 +84,15 @@ The public surface is `require("curse")` only. Submodules (`curse.config`, `curs
 |----------|---------|
 | `curse.setup(opts?)` | Initialize plugin and register commands |
 | `curse.prompt(range?)` | Prompt for a message and run ask (file-backed buffer required) |
+| `curse.ask_visual()` | Ask from visual mode; captures selection before the input prompt |
 | `curse.cancel()` | Cancel the active request |
 | `curse.show_log()` | Open the session log buffer |
 | `curse.list_chats(opts?, callback)` | List stored chats; `callback(chats, err?)` |
 | `curse.get_active_chat()` | Active chat or nil |
-| `curse.set_active_chat(id)` | Set active chat for next ask |
+| `curse.set_active_chat(chat)` | Set active chat by id string or full `CurseChat` record |
 | `curse.select_chat(opts?)` | Built-in session picker |
 | `curse.new_chat()` | Clear active chat |
-| `curse.list_models(callback)` | Async fetch; `callback(models, err?)` |
-| `curse.get_model()` | Current session model slug |
-| `curse.set_model(slug)` | Set session model slug |
-| `curse.select_model()` | Built-in model picker |
+| `curse.sync_active_chat()` | Resolve active chat metadata from disk |
 
 ### Extension API
 
@@ -106,8 +101,10 @@ For custom cursor-agent integrations (similar to built-in search/tutorial). May 
 | Function | Purpose |
 |----------|---------|
 | `curse.run(opts)` | Run cursor-agent with custom options (see `CurseRunOpts`) |
-| `curse.get_cmd(bufnr?, opts?)` | Build CLI argv; pass to `run({ cmd = ... })` |
-| `curse.visual_range()` | Current visual selection as `{ start, end }` line range |
+| `curse.get_cmd(bufnr?, opts?)` | Build CLI argv for non-interactive runs |
+| `curse.get_chat_cmd(bufnr?, opts?)` | Build CLI argv for interactive chat (`--continue` / `--resume`) |
+| `curse.get_cwd(bufnr?, opts?)` | Workspace directory for a run |
+| `curse.visual_range()` | Current visual selection as `{ start, end, start_col?, end_col? }` |
 | `curse.is_running()` | Whether a request is active |
 | `curse.queue_size()` | Number of queued requests |
 
@@ -129,11 +126,11 @@ require("curse").run({
 
 **`CurseChat`** — chat record from `list_chats` / `get_active_chat`:
 
-`{ id, name?, workspace?, workspace_hash?, created_at?, model?, last_used_at? }`
+`{ id, name?, workspace?, workspace_hash?, path?, dir?, model?, created_at?, last_used_at? }`
 
-**`CurseModelEntry`** — model from `list_models`:
+**`CurseLineRange`** — line or character visual selection:
 
-`{ id, name, default?, current? }`
+`{ start, end, start_col?, end_col? }` — column fields present for char-visual (`v`) selections.
 
 **`CurseRunOpts`** — extension run options:
 
@@ -141,11 +138,12 @@ require("curse").run({
 |-------|-------------|
 | `message` | Prompt text (required) |
 | `bufnr?` | Source buffer (defaults to current) |
-| `range?` | Line range for context |
+| `range?` | Line or char range for context |
 | `cmd?` | CLI argv override (from `get_cmd`) |
+| `cwd?` | Working directory override |
 | `build_context?` | Custom context builder |
 | `reload?` | Reload source buffer on success (default true for ask) |
-| `skip_system_prompt?` | Omit curse system prompt |
+| `skip_system_prompt?` | Send message only (no context block) |
 | `reuse_chat?` | Resume active chat (default true) |
 | `capture_output?` | Collect assistant output |
 | `require_file_backed?` | Require file-backed buffer when queued |
@@ -155,12 +153,41 @@ require("curse").run({
 
 `{ status, output, error?, cancelled }` where `status` is a `CurseStatus` string.
 
+## Context and visual selection
+
+Ask requests send **metadata only** — not a full file dump. Every ask includes `File:`, `Cwd:`, and `Filetype:` headers. The bundled [neovim skill](skills/neovim/SKILL.md) tells cursor-agent to read the file with its own tools.
+
+With a visual selection, context also includes:
+
+| Selection | Context fields |
+|-----------|----------------|
+| Line visual (`V`) | `Selected lines: N-M` |
+| Char visual (`v`) | `Selected: line N, columns A-B` (or multi-line variant) |
+| Any selection | `Selected text:` with the highlighted content |
+
+`:CurseAsk` on a range preserves char-visual column bounds when invoked from visual mode. Map visual ask explicitly with `curse.ask_visual()` if you want to capture the selection before the input prompt clears visual mode.
+
+## Skills
+
+When `skills = true` (default), curse passes `--plugin-dir` pointing at the plugin root so cursor-agent loads bundled skills. The included **neovim** skill documents editor context fields and edit-vs-ask behavior for in-editor requests.
+
+Set `skills = false` to omit the plugin directory from CLI invocations.
+
+## Interactive chat
+
+`:CurseChat` opens a terminal split running cursor-agent interactively:
+
+- Resumes the active session when one exists (`--resume`), otherwise starts with `--continue`
+- Runs in the active chat's workspace, or the current buffer's workspace
+- Reuses an existing split when already open; split height defaults to 35% of editor lines (`chat.height`)
+
+Use `:CurseSessions` or `:CurseNew` to switch or reset the session that chat resumes.
+
 ## Chat sessions
 
 Ask commands reuse the same **cursor-agent chat** until `:CurseNew` or Neovim exit:
 
-- First `:CurseAsk` in a chat sends the curse system prompt, your message, and buffer context
-- Follow-up asks send **only your message** and resume via `--resume`
+- Each ask sends your message plus buffer metadata (and selection when present), and resumes via `--resume` when a session is active
 - `:CurseNew` clears the active chat; the next ask starts fresh
 - `:CurseSearch` and `:CurseTutorial` do not reuse or affect the ask chat
 
@@ -175,19 +202,11 @@ vim.keymap.set("n", "<leader>cs", function()
       prompt = "Curse session: ",
       format_item = function(c) return c.name end,
     }, function(choice)
-      if choice then require("curse").set_active_chat(choice.id) end
+      if choice then require("curse").set_active_chat(choice) end
     end)
   end)
 end)
 ```
-
-## Model switching
-
-- Default model is `composer-2.5-fast`
-- `setup({ model = "..." })` sets the default used on each Neovim start
-- `:CurseModel` or `curse.select_model()` switches the model for the current session only (in-memory; restart restores your setup default)
-- Model list is fetched from `cursor-agent models` (account-specific)
-- `:CurseModel` uses plain Neovim `vim.ui.select` by default (via `ui.select` hook when configured)
 
 ## Custom UI (optional)
 
@@ -203,17 +222,17 @@ require("curse").setup({
 })
 ```
 
-`:CurseModel` and `:CurseSessions` respect `ui.select` when set.
+`:CurseSessions` respects `ui.select` when set.
 
 ## Behavior
 
 - Runs `cursor-agent` asynchronously via `vim.system`
-- Passes the active model to every run via `--model` (task-specific `search.model` / `tutorial.model` overrides still apply when configured)
+- Uses `--model auto` for all runs
 - Shows status with `vim.notify` (or your `ui.notify` hook)
 - Queues additional requests while one is active
 - Reloads the source buffer after a successful ask
 - Search and tutorial run in read-only `ask` mode and present output via quickfix or a markdown split
-- Treats unsaved buffer content as newer than disk when building context
+- Treats unsaved buffer content as newer than disk when building selection text
 
 ## License
 
