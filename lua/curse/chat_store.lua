@@ -67,6 +67,8 @@ local function parse_store_db(db_path, workspace_paths)
     name = name,
     workspace = workspace_paths[workspace_hash] or workspace_hash,
     workspace_hash = workspace_hash,
+    path = db_path,
+    dir = vim.fn.fnamemodify(db_path, ":h"),
     created_at = meta.createdAt or 0,
     model = meta.lastUsedModel,
   }
@@ -111,6 +113,66 @@ function M.list_sync(opts)
   return chats
 end
 
+---@param id string
+---@return CurseChat?
+function M.find_by_id(id)
+  if not id or id == "" then
+    return nil
+  end
+
+  local partial
+  for _, chat in ipairs(M.list_sync({ all_workspaces = true })) do
+    if chat.id == id then
+      return chat
+    end
+    if not partial and chat.id:find(id, 1, true) then
+      partial = chat
+    end
+  end
+
+  return partial
+end
+
+---@param chat CurseChat
+---@return string?
+function M.resolve_session_path(chat)
+  if chat.path and chat.path ~= "" and vim.fn.filereadable(chat.path) == 1 then
+    return chat.path
+  end
+
+  if not chat.id or chat.id == "" then
+    return nil
+  end
+
+  local stored = M.find_by_id(chat.id)
+  if stored and stored.path and stored.path ~= "" and vim.fn.filereadable(stored.path) == 1 then
+    return stored.path
+  end
+
+  return nil
+end
+
+---@param chat CurseChat
+---@return CurseChat?
+function M.resolve_session(chat)
+  local path = M.resolve_session_path(chat)
+  if not path then
+    return nil
+  end
+
+  local workspace_paths = {}
+  if chat.workspace_hash and chat.workspace then
+    workspace_paths[chat.workspace_hash] = chat.workspace
+  end
+
+  local stored = parse_store_db(path, workspace_paths)
+  if not stored then
+    return nil
+  end
+
+  return vim.tbl_extend("force", chat, stored)
+end
+
 ---@param opts? CurseListChatsOpts
 ---@param callback fun(chats: CurseChat[], err?: string)
 function M.list(opts, callback)
@@ -126,6 +188,64 @@ end
 ---@return string?
 function M.workspace_hash(workspace)
   return md5_hex(workspace)
+end
+
+---@param chat CurseChat
+---@param name string
+---@return boolean, string?
+function M.rename(chat, name)
+  local path = M.resolve_session_path(chat)
+  if not path then
+    return false, "session store not found"
+  end
+  chat.path = path
+
+  name = vim.trim(name)
+  if name == "" then
+    return false, "name is empty"
+  end
+
+  local meta = chat_sqlite.read_meta(path)
+  if not meta then
+    return false, "session metadata not found"
+  end
+
+  meta.name = name
+  return chat_sqlite.write_meta(path, meta)
+end
+
+---@param chat CurseChat
+---@return boolean, string?
+function M.delete(chat)
+  local path = M.resolve_session_path(chat)
+  if not path then
+    return false, "session store not found"
+  end
+  chat.path = path
+
+  local dir = chat.dir or vim.fn.fnamemodify(path, ":h")
+  if vim.fn.isdirectory(dir) ~= 1 then
+    return false, "session directory not found"
+  end
+
+  local trashed = pcall(vim.fn.delete, dir, "trash")
+  if trashed and vim.fn.isdirectory(dir) == 0 then
+    return true
+  end
+
+  if vim.fn.executable("trash-put") == 1 then
+    vim.fn.system({ "trash-put", dir })
+    if vim.fn.isdirectory(dir) == 0 then
+      return true
+    end
+  end
+
+  local ok = pcall(vim.fn.delete, dir, "rf")
+  if ok and vim.fn.isdirectory(dir) == 0 then
+    return true
+  end
+
+  return false, "failed to delete session directory"
 end
 
 return M

@@ -66,11 +66,16 @@ end
 ---@field on_stderr fun(data: string)
 ---@field on_exit fun(result: vim.SystemCompleted)
 
+---@class RunnerOpts
+---@field cwd? string
+
 ---@param session CurseSession
 ---@param cmd string[]
 ---@param handlers RunnerHandlers
+---@param opts? RunnerOpts
 ---@return vim.SystemObj?, string?
-function M.start(session, cmd, handlers)
+function M.start(session, cmd, handlers, opts)
+  opts = opts or {}
   local feed_stdout, stdout_tail = make_stream_feeder(function(line)
     process_line(line, handlers.on_event, nil)
   end)
@@ -78,9 +83,9 @@ function M.start(session, cmd, handlers)
     process_line(line, function() end, handlers.on_stderr)
   end)
 
-  logger.debug("starting process cmd=%s", table.concat(cmd, " "))
+  logger.debug("starting process cmd=%s cwd=%s", table.concat(cmd, " "), opts.cwd or vim.fn.getcwd())
 
-  local ok, sys_or_err = pcall(vim.system, cmd, {
+  local system_opts = {
     text = true,
     stdout = vim.schedule_wrap(function(err, data)
       if err then handlers.on_error(err); return end
@@ -92,7 +97,10 @@ function M.start(session, cmd, handlers)
       if session.cancelled then return end
       feed_stderr(data)
     end),
-  }, vim.schedule_wrap(function(result)
+  }
+  if opts.cwd then system_opts.cwd = opts.cwd end
+
+  local ok, sys_or_err = pcall(vim.system, cmd, system_opts, vim.schedule_wrap(function(result)
     local remaining_stdout = stdout_tail()
     if remaining_stdout ~= "" then
       process_line(remaining_stdout, handlers.on_event, nil)

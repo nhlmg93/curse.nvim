@@ -50,4 +50,38 @@ function M.read_meta(db_path)
   return M.decode_meta_hex(meta_hex)
 end
 
+---@param meta table
+---@return string?
+function M.encode_meta_hex(meta)
+  local ok, json = pcall(vim.json.encode, meta)
+  if not ok or not json then return nil end
+
+  local hex = {}
+  for i = 1, #json do
+    hex[#hex + 1] = string.format("%02x", json:byte(i))
+  end
+  return table.concat(hex)
+end
+
+---@param db_path string
+---@param meta table
+---@return boolean, string?
+function M.write_meta(db_path, meta)
+  if not M.available() then
+    return false, M.unavailable_message()
+  end
+
+  local hex = M.encode_meta_hex(meta)
+  if not hex then
+    return false, "failed to encode session metadata"
+  end
+
+  local sql = string.format("UPDATE meta SET value=x'%s' WHERE key=0;", hex)
+  local result = vim.system({ "sqlite3", "-batch", db_path, sql }, { text = true }):wait()
+  if result.code ~= 0 then
+    return false, vim.trim(result.stderr or "failed to write session metadata")
+  end
+  return true
+end
+
 return M

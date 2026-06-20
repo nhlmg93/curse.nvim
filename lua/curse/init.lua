@@ -12,6 +12,8 @@ local ui = require("curse.ui")
 ---@type curse
 local M = {}
 
+local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
+
 --- Internal runner state; not part of the public API.
 ---@class CurseSession
 ---@field id integer
@@ -91,6 +93,53 @@ local function workspace_for(bufnr)
   return dir
 end
 
+---@param bufnr integer
+---@param opts? CurseRunOpts
+---@return string
+local function run_cwd(bufnr, opts)
+  local chat = chats.get_active()
+  if chat and chat.workspace and chat.workspace ~= "" then
+    return vim.fn.fnamemodify(chat.workspace, ":p")
+  end
+  if opts and opts.cwd then return opts.cwd end
+  return workspace_for(bufnr)
+end
+
+---@return CurseChat?
+local function resolve_active_chat()
+  local chat = chats.get_active()
+  if not chat then
+    return nil
+  end
+
+  if chat.path and chat.path ~= "" then
+    return chat
+  end
+
+  local stored = require("curse.chat_store").find_by_id(chat.id)
+  if not stored then
+    return chat
+  end
+
+  chat = vim.tbl_extend("force", chat, {
+    path = stored.path,
+    dir = stored.dir,
+    workspace = chat.workspace or stored.workspace,
+    workspace_hash = chat.workspace_hash or stored.workspace_hash,
+    name = chat.name or stored.name,
+    model = chat.model or stored.model,
+  })
+  chats.set_active(chat)
+  return chat
+end
+
+---@param bufnr? integer
+---@param opts? { cwd?: string }
+---@return string
+function M.get_cwd(bufnr, opts)
+  return run_cwd(bufnr or vim.api.nvim_get_current_buf(), opts)
+end
+
 local function ensure_file_backed_buffer()
   local bufnr = vim.api.nvim_get_current_buf()
   if not context.buffer_is_file_backed(bufnr) then
@@ -106,14 +155,18 @@ end
 function M.get_cmd(bufnr, opts)
   opts = opts or {}
   local cfg = config.get()
-  local cmd = {
-    "cursor-agent",
-    "--print",
-    "--output-format",
-    "stream-json",
-    "--stream-partial-output",
-    "--trust",
-  }
+  local cmd = config.get_binary_cmd()
+  if not opts.interactive then
+    vim.list_extend(cmd, {
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
+      "--trust",
+    })
+  else
+    table.insert(cmd, "--trust")
+  end
   if bufnr then
     table.insert(cmd, "--workspace")
     table.insert(cmd, workspace_for(bufnr))
@@ -123,9 +176,15 @@ function M.get_cmd(bufnr, opts)
     table.insert(cmd, cfg.mode)
   end
   table.insert(cmd, "--model")
-  table.insert(cmd, config.get_model())
+  table.insert(cmd, "auto")
+  if cfg.skills ~= false and not opts.skip_system_prompt_cli then
+    if vim.fn.isdirectory(plugin_root) == 1 then
+      table.insert(cmd, "--plugin-dir")
+      table.insert(cmd, plugin_root)
+    end
+  end
   if opts.reuse_chat ~= false then
-    local chat = chats.get_active()
+    local chat = resolve_active_chat()
     if chat then
       table.insert(cmd, "--resume")
       table.insert(cmd, chat.id)
@@ -134,22 +193,42 @@ function M.get_cmd(bufnr, opts)
   return cmd
 end
 
+--- Resolve active chat from disk and persist on the in-memory session.
+---@return CurseChat?
+function M.sync_active_chat()
+  return resolve_active_chat()
+end
+
+---@param bufnr? integer
+---@param opts? CurseGetCmdOpts
+---@return string[]
+function M.get_chat_cmd(bufnr, opts)
+  M.sync_active_chat()
+  local cmd = M.get_cmd(bufnr, vim.tbl_extend("force", { interactive = true, reuse_chat = true }, opts or {}))
+
+  local has_session = false
+  for _, arg in ipairs(cmd) do
+    if arg == "--resume" then
+      has_session = true
+      break
+    end
+  end
+  if not has_session then
+    table.insert(cmd, "--continue")
+  end
+
+  return cmd
+end
+
 ---@param message string
 ---@param context_text string
 ---@param skip_system_prompt? boolean
 ---@return string
 local function build_prompt(message, context_text, skip_system_prompt)
-  local cfg = config.get()
-  local parts = {}
-  if not skip_system_prompt then
-    parts[#parts + 1] = context.system_prompt
-    if cfg.append_system_prompt and cfg.append_system_prompt ~= "" then
-      parts[#parts + 1] = cfg.append_system_prompt
-    end
+  if skip_system_prompt then
+    return message
   end
-  parts[#parts + 1] = message
-  parts[#parts + 1] = "Context:\n" .. context_text
-  return table.concat(parts, "\n\n")
+  return table.concat({ message, "Context:\n" .. context_text }, "\n\n")
 end
 
 ---@return { queued: integer }
@@ -289,7 +368,6 @@ local function capture_chat_from_event(event, bufnr, message)
     name = truncate_label(message, 60),
     workspace = workspace,
     workspace_hash = require("curse.chat_store").workspace_hash(workspace),
-    model = config.get_model(),
   })
 end
 
@@ -411,9 +489,9 @@ end
 ---@param opts CurseRunOpts
 start_session = function(opts)
   local message = opts.message
-  local bufnr = opts.bufnr
-  local resuming = opts.reuse_chat ~= false and chats.get_active() ~= nil
-  local cmd = opts.cmd or M.get_cmd(bufnr, opts)
+  local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
+  local workspace = run_cwd(bufnr, opts)
+  local cmd = opts.cmd or M.get_cmd(bufnr, { reuse_chat = opts.reuse_chat })
 
   local build_context = opts.build_context
   if not build_context then
@@ -424,6 +502,7 @@ start_session = function(opts)
   end
 
   local session = new_session(bufnr)
+  session.cwd = workspace
   session.reload = opts.reload
   session.capture_output = opts.capture_output
   session.on_complete = opts.on_complete
@@ -436,7 +515,7 @@ start_session = function(opts)
 
   local prompt
   local built_context = ""
-  if resuming then
+  if opts.skip_system_prompt then
     prompt = message
   else
     local ok, context_result = pcall(build_context)
@@ -501,7 +580,7 @@ start_session = function(opts)
       end
       finish_session(session, "done", { exit_code = result.code })
     end,
-  })
+  }, { cwd = workspace })
 
   if not process then
     finish_session(session, "error", { error = tostring(err) })
@@ -546,40 +625,67 @@ function M.run(opts)
   start_session(opts)
 end
 
+---@param bufnr integer
+---@param start_pos integer[]
+---@param end_pos integer[]
+---@param include_cols boolean
+---@return CurseLineRange?
+local function build_visual_range(bufnr, start_pos, end_pos, include_cols)
+  if not start_pos or not end_pos then return nil end
+  if start_pos[1] ~= 0 and start_pos[1] ~= bufnr then return nil end
+
+  local start_line = start_pos[2]
+  local end_line = end_pos[2]
+  if start_line == 0 or end_line == 0 then return nil end
+
+  local start_col = start_pos[3]
+  local end_col = end_pos[3]
+  if start_line > end_line or (start_line == end_line and start_col > end_col) then
+    start_line, end_line, start_col, end_col = end_line, start_line, end_col, start_col
+  end
+
+  ---@type CurseLineRange
+  local range = { start = start_line, ["end"] = end_line }
+  if include_cols then
+    range.start_col = start_col
+    range.end_col = end_col
+  end
+  return range
+end
+
+---@param bufnr integer
+---@param start_pos integer[]
+---@param end_pos integer[]
+---@return boolean
+local function marks_are_linewise(bufnr, start_pos, end_pos)
+  if start_pos[3] ~= 1 then return false end
+  local end_line = end_pos[2]
+  local line = vim.api.nvim_buf_get_lines(bufnr, end_line - 1, end_line, false)[1] or ""
+  return end_pos[3] >= #line + 1
+end
+
 ---@return CurseLineRange?
 function M.visual_range()
   local mode = vim.api.nvim_get_mode().mode
   local bufnr = vim.api.nvim_get_current_buf()
 
-  -- Active visual selection: marks are not set until after leaving visual mode.
   if mode == "v" or mode == "V" or mode == "\22" then
-    local start_line = vim.fn.line("v")
-    local end_line = vim.fn.line(".")
-    if start_line > 0 and end_line > 0 then
-      if start_line > end_line then start_line, end_line = end_line, start_line end
-      return { start = start_line, ["end"] = end_line }
-    end
+    return build_visual_range(
+      bufnr,
+      vim.fn.getpos("v"),
+      vim.fn.getpos("."),
+      mode == "v"
+    )
   end
 
   local start_pos = vim.fn.getpos("'<")
   local end_pos = vim.fn.getpos("'>")
-
-  if not start_pos or not end_pos then
-    return nil
-  end
-
-  if start_pos[1] ~= 0 and start_pos[1] ~= bufnr then
-    return nil
-  end
-
-  local start_line = start_pos[2]
-  local end_line = end_pos[2]
-  if start_line == 0 or end_line == 0 then
-    return nil
-  end
-  if start_line > end_line then start_line, end_line = end_line, start_line end
-
-  return { start = start_line, ["end"] = end_line }
+  return build_visual_range(
+    bufnr,
+    start_pos,
+    end_pos,
+    not marks_are_linewise(bufnr, start_pos, end_pos)
+  )
 end
 
 ---@param range? CurseLineRange
@@ -598,17 +704,34 @@ function M.prompt(range)
   end)
 end
 
+--- Ask from visual mode; capture selection before input prompt.
+function M.ask_visual()
+  M.prompt(context.normalize_range(M.visual_range()))
+end
+
 ---@param opts? CurseConfig
 function M.setup(opts)
   config.setup(opts)
 
-  vim.api.nvim_create_user_command("CurseAsk", function(opts)
+  vim.api.nvim_create_user_command("CurseAsk", function(cmd_opts)
     local range
-    if opts.line1 ~= opts.line2 then
-      range = { start = opts.line1, ["end"] = opts.line2 }
+    if cmd_opts.range > 0 then
+      local from_visual = M.visual_range()
+      if from_visual
+        and from_visual.start == cmd_opts.line1
+        and from_visual["end"] == cmd_opts.line2 then
+        range = from_visual
+      else
+        range = { start = cmd_opts.line1, ["end"] = cmd_opts.line2 }
+      end
+      range = context.normalize_range(range)
     end
     M.prompt(range)
   end, { range = true, desc = "Ask curse (cursor-agent)" })
+
+  vim.api.nvim_create_user_command("CurseChat", function()
+    require("curse.chat").open()
+  end, { desc = "Chat with curse in a terminal split" })
 
   vim.api.nvim_create_user_command("CurseCancel", function()
     M.cancel()
@@ -628,10 +751,6 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("CurseTutorial", function()
     tutorial.prompt()
   end, { desc = "Generate a tutorial via curse" })
-
-  vim.api.nvim_create_user_command("CurseModel", function()
-    M.select_model()
-  end, { desc = "Select cursor-agent model" })
 
   vim.api.nvim_create_user_command("CurseNew", function()
     M.new_chat()
@@ -663,22 +782,6 @@ function M.queue_size()
   return queue.size()
 end
 
----@return string
-function M.get_model()
-  return config.get_model()
-end
-
----@param slug string
-function M.set_model(slug)
-  config.set_model(slug)
-end
-
-function M.select_model()
-  require("curse.model").prompt()
-end
-
-M.list_models = require("curse.models").list
-
 ---@param opts? CurseListChatsOpts
 ---@param callback fun(chats: CurseChat[], err?: string)
 function M.list_chats(opts, callback)
@@ -690,9 +793,15 @@ function M.get_active_chat()
   return chats.get_active()
 end
 
----@param id string
-function M.set_active_chat(id)
-  chats.set_active({ id = id })
+---@overload fun(chat: string)
+---@overload fun(chat: CurseChat)
+---@param chat CurseChat|string
+function M.set_active_chat(chat)
+  if type(chat) == "string" then
+    chats.set_active({ id = chat })
+    return
+  end
+  chats.set_active(chat)
 end
 
 ---@param opts? CurseListChatsOpts

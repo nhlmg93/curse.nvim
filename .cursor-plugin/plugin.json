@@ -1,0 +1,5 @@
+{
+  "name": "curse-neovim",
+  "version": "1.0.0",
+  "description": "Neovim integration skills for curse.nvim"
+}

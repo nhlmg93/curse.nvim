@@ -25,13 +25,10 @@ end
 ---@return string[]
 function M.cmd_for(bufnr, task_cfg)
   local curse = require("curse")
-  local cmd = curse.get_cmd(bufnr, { reuse_chat = false })
+  local cmd = curse.get_cmd(bufnr, { reuse_chat = false, skip_system_prompt_cli = true })
 
   local mode = (task_cfg and task_cfg.mode) or "ask"
   override_flag(cmd, "--mode", mode)
-
-  local model = (task_cfg and task_cfg.model) or config.get_model()
-  override_flag(cmd, "--model", model)
 
   return cmd
 end
